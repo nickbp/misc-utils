@@ -40,6 +40,10 @@
    decorations: left=7 top=22 border=0
    -> exterior: x=50 y=50 (PASS)
 
+
+  (TODO ADD MORE EXAMPLES HERE)
+
+
   compiz:
 
   moving window to x=50 y=50
@@ -48,6 +52,9 @@
    decorations: left=0 top=0 border=0
    -> exterior: x=51 y=79 (FAIL)
 */
+
+#define MOVE_WIN_X 50
+#define MOVE_WIN_Y 50
 
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
@@ -103,9 +110,6 @@ unsigned char* get_property(Display *disp, Window win,
 	return ret_prop;
 }
 
-#define WIN_X 50
-#define WIN_Y 50
-
 int main() {
 	XWindowAttributes attr;
 	int interior_x, interior_y;
@@ -124,14 +128,15 @@ int main() {
 			return 1;
 		}
 
-		printf("moving window to x=%d y=%d\n", WIN_X, WIN_Y);
+		printf("moving window to x=%d y=%d\n", MOVE_WIN_X, MOVE_WIN_Y);
 
-		XMoveWindow(disp, *active_win, WIN_X, WIN_Y);
+		XMoveWindow(disp, *active_win, MOVE_WIN_X, MOVE_WIN_Y);
 
 		XFree(active_win);
 	}
 
-	/* reset active_win to ensure coord update */
+	/* reset active_win to hopefully ensure coord update???
+	   (sometimes doesn't work, but I'm too lazy for a sleep() hack) */
 
 	{
 		Window* active_win = (Window*)get_property(disp, DefaultRootWindow(disp),
@@ -166,7 +171,7 @@ int main() {
 	int ext_x = interior_x - attr.x - attr.border_width,
 		ext_y = interior_y - attr.y - attr.border_width;
 	printf(" -> exterior: x=%d y=%d (%s)\n", ext_x, ext_y,
-			(ext_x == WIN_X && ext_y == WIN_Y) ? "PASS" : "FAIL");
+			(ext_x == MOVE_WIN_X && ext_y == MOVE_WIN_Y) ? "PASS" : "FAIL");
 
 	return 0;
 }
