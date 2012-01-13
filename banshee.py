@@ -16,22 +16,48 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+# TODO something like this:
+# echo "musicwidget.text = \":)\"" | awesome-client
+# (or run awesome-client and send musicwidget.text = ":)"\n to its stdin)
+# ps add this http://docs.python.org/library/stdtypes.html#string-formatting
+#print '%(language)s has %(number)03d quote types.' % \
+#       {"language": "Python", "number": 2}
+
 ### DEFINES ###
 
-dbus_name = "org.bansheeproject.Banshee"
-dbus_engine_path = "/org/bansheeproject/Banshee/PlayerEngine"
-dbus_controller_path = "/org/bansheeproject/Banshee/PlaybackController"
+banshee_dbus_name = "org.bansheeproject.Banshee"
+banshee_dbus_engine_path = "/org/bansheeproject/Banshee/PlayerEngine"
+banshee_dbus_controller_path = "/org/bansheeproject/Banshee/PlaybackController"
+
+dbus_listen_name = banshee_dbus_engine_path[1:].replace('/','.')
+dbus_listen_signal = "StateChanged"
+
+# Available keys:
+# album, album-artist, artist, artwork-id, bit-rate,
+# comment, composer, date-added, file-size, genre,
+# is-compilation, last-skipped, length, local-path, media-attributes,
+# mime-type, name, rating, sample-rate, score,
+# skip-count, track-number, URI, year
+default_format = "%(artist)s - %(name)s"
+
+# Send data to an awesome widget
+default_send_name = "org.naquadah.awesome.awful"
+default_send_path = "/org/naquadah/awesome/awful/Remote"
+default_send_cmd = "Eval"
 
 import dbus, sys
 
 def help_exit():
-    sys.stderr.write('''Args: %s <command>
+    sys.stderr.write('''Args: %s <command> [format]
 Commands:
   play - Toggles playback of current track.
   stop - Stops current playback, if any.
   next - Skips to the next track.
   prev - Skips to the previous track or restarts the current track.
-  status - Prints current track status\n''' % sys.argv[0])
+  status - Prints current track status, using 'format' if specified.
+  listen_print - Runs continuously, printing status on changes, using 'format' if specified.
+  listen_dbus - Same as listen_print, except sending 'format' to a dbus destination.
+''' % sys.argv[0])
     sys.exit(1)
 
 # Returns the DBus object for Banshee, or None if autostart is false and it's not running
@@ -48,54 +74,108 @@ def get_dbus_obj(name, path, autostart = True):
 
     return bus.get_object(name, path)
 
-def cmd_status():
+def get_status(track_format):
     # False: if banshee is closed, dont start it
-    banshee = get_dbus_obj(dbus_name, dbus_engine_path, False)
+    banshee = get_dbus_obj(banshee_dbus_name, banshee_dbus_engine_path, False)
     if not banshee:
-        print "Not Running"
-        return
+        return "Not Running"
     # in case no track is even selected..
     state = banshee.GetCurrentState()
     if state == "idle":
-        print "Idle"
-        return
+        return "Idle"
     elif state == "notready":
-        print "Loading..."
-        return
+        return "Loading..."
     track = banshee.GetCurrentTrack()
-    # Available keys:
-    # album, local-path, media-attributes, rating,
-    # name, artist, bit-rate, file-size, mime-type,
-    # URI, comment, genre, length, artwork-id,
-    # sample-rate, year, is-compilation, track-number,
-    # date-added, album-artist
-    artist = track.get("artist","")
-    name = track.get("name","")
-    print "%s - %s" % (artist, name)
+    try:
+        return unicode(track_format % track).encode("utf-8")
+    except KeyError, e:
+        return "Bad format: Not found:", e
+    except:
+        return "Exception: ", sys.exc_info()[1]
+
+class PrintHandler:
+    def __init__(self, track_format):
+        self.__format = track_format
+
+    def handle(self, state):
+        #print state
+        if not state == "loading":
+            return #assume song hasnt changed
+
+        print get_status(self.__format)
+
+class DbusHandler:
+    def __init__(self, dbus_name, dbus_path, dbus_cmd, track_format):
+        self.__dbus_name = dbus_name
+        self.__dbus_path = dbus_path
+        self.__dbus_cmd = dbus_cmd
+        self.__format = track_format
+
+    def handle(self, state):
+        #print state
+        if not state == "loading":
+            return #assume song hasnt changed
+
+        sendme = get_status(self.__format)
+        #print "SEND:", sendme
+
+        out = get_dbus_obj(self.__dbus_name, self.__dbus_path)
+        interface = self.__dbus_path[1:].replace('/','.')
+
+        err = out.get_dbus_method(self.__dbus_cmd)(sendme, dbus_interface=interface)
+        if err:
+            print err
+
+def cmd_listen(dbus_out, track_format = default_format):
+    # This must come BEFORE calling dbus.SessionBus():
+    from dbus.mainloop.glib import DBusGMainLoop
+    dbus_loop = DBusGMainLoop()
+
+    bus = dbus.SessionBus(mainloop=dbus_loop)
+    if dbus_out:
+        b = DbusHandler(default_send_name, default_send_path,
+                        default_send_cmd, track_format)
+    else:
+        b = PrintHandler(track_format)
+
+    bus.add_signal_receiver(b.handle,
+                            dbus_listen_signal,
+                            dbus_listen_name)
+
+    import gobject
+    loop = gobject.MainLoop()
+
+    #ping the current status before we start listening for changes
+    b.handle("loading")
+
+    loop.run()
+
+def cmd_status(track_format = default_format):
+    print get_status(track_format)
 
 def cmd_play():
-    banshee = get_dbus_obj(dbus_name, dbus_engine_path)
+    banshee = get_dbus_obj(banshee_dbus_name, banshee_dbus_engine_path)
     if banshee:
         banshee.TogglePlaying()
     cmd_status()
 
 def cmd_stop():
     # Don't start banshee to stop it...
-    banshee = get_dbus_obj(dbus_name, dbus_engine_path, False)
+    banshee = get_dbus_obj(banshee_dbus_name, banshee_dbus_engine_path, False)
     if banshee:
         banshee.Close()
     cmd_status()
 
 def cmd_next():
     # Not sure what the 'restart' bool is for
-    banshee = get_dbus_obj(dbus_name, dbus_controller_path)
+    banshee = get_dbus_obj(banshee_dbus_name, banshee_dbus_controller_path)
     if banshee:
         banshee.Next(True)
     cmd_status()
 
 def cmd_prev():
     # Not sure what the 'restart' bool is for
-    banshee = get_dbus_obj(dbus_name, dbus_controller_path)
+    banshee = get_dbus_obj(banshee_dbus_name, banshee_dbus_controller_path)
     if banshee:
         banshee.RestartOrPrevious(True)
     cmd_status()
@@ -114,7 +194,20 @@ def main(args):
     elif cmd == "prev":
         cmd_prev()
     elif cmd == "status":
-        cmd_status()
+        if len(args) == 3:
+            cmd_status(args[2])
+        else:
+            cmd_status()
+    elif cmd == "listen_print":
+        if len(args) == 3:
+            cmd_listen(False, args[2])
+        else:
+            cmd_listen(False, )
+    elif cmd == "listen_dbus":
+        if len(args) == 3:
+            cmd_listen(True, args[2])
+        else:
+            cmd_listen(True)
     else:
         help_exit()
 
