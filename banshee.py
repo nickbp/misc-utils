@@ -29,8 +29,8 @@ banshee_dbus_name = "org.bansheeproject.Banshee"
 banshee_dbus_engine_path = "/org/bansheeproject/Banshee/PlayerEngine"
 banshee_dbus_controller_path = "/org/bansheeproject/Banshee/PlaybackController"
 
-dbus_listen_name = banshee_dbus_engine_path[1:].replace('/','.')
-dbus_listen_signal = "StateChanged"
+dbus_listen_name = "org.bansheeproject.Banshee.PlayerEngine"
+dbus_listen_signal = "EventChanged"
 
 # Available keys:
 # album, album-artist, artist, artwork-id, bit-rate,
@@ -93,14 +93,21 @@ def get_status(track_format):
     except:
         return "Exception: ", sys.exc_info()[1]
 
+def _skip(msg, ignorea, ignoreb):
+    #print msg, ignorea, ignoreb
+    if msg == "startofstream":
+        return False
+    #assume song hasnt changed
+    #print "SKIP:", msg
+    return True
+
 class PrintHandler:
     def __init__(self, track_format):
         self.__format = track_format
 
-    def handle(self, state):
-        #print state
-        if not state == "loading":
-            return #assume song hasnt changed
+    def handle(self, msg, ignorea=None, ignoreb=None):
+        if _skip(msg, ignorea, ignoreb):
+            return
 
         print get_status(self.__format)
 
@@ -111,10 +118,9 @@ class DbusHandler:
         self.__dbus_cmd = dbus_cmd
         self.__format = track_format
 
-    def handle(self, state):
-        #print state
-        if not state == "loading":
-            return #assume song hasnt changed
+    def handle(self, msg, ignorea=None, ignoreb=None):
+        if _skip(msg, ignorea, ignoreb):
+            return
 
         sendme = get_status(self.__format)
         #print "SEND:", sendme
@@ -146,7 +152,7 @@ def cmd_listen(dbus_out, track_format = default_format):
     loop = gobject.MainLoop()
 
     #ping the current status before we start listening for changes
-    b.handle("loading")
+    b.handle("startofstream")
 
     loop.run()
 
