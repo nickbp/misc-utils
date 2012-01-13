@@ -158,7 +158,7 @@ def cmd_listen(dbus_out, track_format = default_track_format, err_format = defau
     loop.run()
 
 def cmd_status(track_format = default_track_format, err_format = default_err_format):
-    print get_status(track_format)
+    print get_status(track_format, err_format)
 
 def cmd_play():
     banshee = get_dbus_obj(banshee_dbus_name, banshee_dbus_engine_path)
