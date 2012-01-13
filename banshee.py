@@ -16,14 +16,19 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-# TODO something like this:
-# echo "musicwidget.text = \":)\"" | awesome-client
-# (or run awesome-client and send musicwidget.text = ":)"\n to its stdin)
-# ps add this http://docs.python.org/library/stdtypes.html#string-formatting
-#print '%(language)s has %(number)03d quote types.' % \
-#       {"language": "Python", "number": 2}
-
 ### DEFINES ###
+
+# Available keys:
+# album, album-artist, artist, artwork-id, bit-rate,
+# comment, composer, date-added, file-size, genre,
+# is-compilation, last-skipped, length, local-path, media-attributes,
+# mime-type, name, rating, sample-rate, score,
+# skip-count, track-number, URI, year
+default_track_format = "%(artist)s - %(name)s"
+# A separate format for messages about Banshee itself (eg when it's not running)
+default_err_format = "%s"
+
+####
 
 banshee_dbus_name = "org.bansheeproject.Banshee"
 banshee_dbus_engine_path = "/org/bansheeproject/Banshee/PlayerEngine"
@@ -32,23 +37,15 @@ banshee_dbus_controller_path = "/org/bansheeproject/Banshee/PlaybackController"
 dbus_listen_name = "org.bansheeproject.Banshee.PlayerEngine"
 dbus_listen_signal = "EventChanged"
 
-# Available keys:
-# album, album-artist, artist, artwork-id, bit-rate,
-# comment, composer, date-added, file-size, genre,
-# is-compilation, last-skipped, length, local-path, media-attributes,
-# mime-type, name, rating, sample-rate, score,
-# skip-count, track-number, URI, year
-default_format = "%(artist)s - %(name)s"
-
 # Send data to an awesome widget
-default_send_name = "org.naquadah.awesome.awful"
-default_send_path = "/org/naquadah/awesome/awful/Remote"
-default_send_cmd = "Eval"
+dbus_send_name = "org.naquadah.awesome.awful"
+dbus_send_path = "/org/naquadah/awesome/awful/Remote"
+dbus_send_cmd = "Eval"
 
 import dbus, sys
 
 def help_exit():
-    sys.stderr.write('''Args: %s <command> [format]
+    sys.stderr.write('''Args: %s <command> [track-format] [err-format]
 Commands:
   play - Toggles playback of current track.
   stop - Stops current playback, if any.
@@ -74,55 +71,59 @@ def get_dbus_obj(name, path, autostart = True):
 
     return bus.get_object(name, path)
 
-def get_status(track_format):
+def get_status(track_format, err_format):
     # False: if banshee is closed, dont start it
     banshee = get_dbus_obj(banshee_dbus_name, banshee_dbus_engine_path, False)
-    if not banshee:
-        return "Not Running"
-    # in case no track is even selected..
-    state = banshee.GetCurrentState()
-    if state == "idle":
-        return "Idle"
-    elif state == "notready":
-        return "Loading..."
-    track = banshee.GetCurrentTrack()
     try:
-        return unicode(track_format % track).encode("utf-8")
+        if not banshee:
+            return unicode(err_format % "Not Running").encode("utf-8")
+        # in case no track is even selected..
+        state = banshee.GetCurrentState()
+        if state == "idle":
+            return unicode(err_format % "Idle").encode("utf-8")
+        elif state == "notready":
+            return unicode(err_format % "Loading...").encode("utf-8")
+        else:
+            track = banshee.GetCurrentTrack()
+            return unicode(track_format % track).encode("utf-8")
     except KeyError, e:
-        return "Bad format: Not found:", e
+        return unicode(err_format % ("Bad format: Not found: %s" % e)).encode("utf-8")
     except:
-        return "Exception: ", sys.exc_info()[1]
+        return unicode(err_format % ("Exception: %s" % sys.exc_info()[1])).encode("utf-8")
 
 def _skip(msg, ignorea, ignoreb):
     #print msg, ignorea, ignoreb
-    if msg == "startofstream":
+    if msg == "startofstream" or msg == "preparevideowindow": #entered new song or opened banshee
         return False
     #assume song hasnt changed
-    #print "SKIP:", msg
+    #print "SKIP:", msg, get_status(default_track_format, default_err_format)
     return True
 
 class PrintHandler:
-    def __init__(self, track_format):
-        self.__format = track_format
+    def __init__(self, track_format, err_format):
+        self.__track_format = track_format
+        self.__err_format = err_format
 
     def handle(self, msg, ignorea=None, ignoreb=None):
         if _skip(msg, ignorea, ignoreb):
             return
 
-        print get_status(self.__format)
+        print get_status(self.__track_format, self.__err_format)
 
 class DbusHandler:
-    def __init__(self, dbus_name, dbus_path, dbus_cmd, track_format):
+    def __init__(self, dbus_name, dbus_path, dbus_cmd,
+                 track_format, err_format):
         self.__dbus_name = dbus_name
         self.__dbus_path = dbus_path
         self.__dbus_cmd = dbus_cmd
-        self.__format = track_format
+        self.__track_format = track_format
+        self.__err_format = err_format
 
     def handle(self, msg, ignorea=None, ignoreb=None):
         if _skip(msg, ignorea, ignoreb):
             return
 
-        sendme = get_status(self.__format)
+        sendme = get_status(self.__track_format, self.__err_format)
         #print "SEND:", sendme
 
         out = get_dbus_obj(self.__dbus_name, self.__dbus_path)
@@ -132,17 +133,17 @@ class DbusHandler:
         if err:
             print err
 
-def cmd_listen(dbus_out, track_format = default_format):
+def cmd_listen(dbus_out, track_format = default_track_format, err_format = default_err_format):
     # This must come BEFORE calling dbus.SessionBus():
     from dbus.mainloop.glib import DBusGMainLoop
     dbus_loop = DBusGMainLoop()
 
     bus = dbus.SessionBus(mainloop=dbus_loop)
     if dbus_out:
-        b = DbusHandler(default_send_name, default_send_path,
-                        default_send_cmd, track_format)
+        b = DbusHandler(dbus_send_name, dbus_send_path, dbus_send_cmd,
+                        track_format, err_format)
     else:
-        b = PrintHandler(track_format)
+        b = PrintHandler(track_format, err_format)
 
     bus.add_signal_receiver(b.handle,
                             dbus_listen_signal,
@@ -156,7 +157,7 @@ def cmd_listen(dbus_out, track_format = default_format):
 
     loop.run()
 
-def cmd_status(track_format = default_format):
+def cmd_status(track_format = default_track_format, err_format = default_err_format):
     print get_status(track_format)
 
 def cmd_play():
@@ -205,11 +206,15 @@ def main(args):
         else:
             cmd_status()
     elif cmd == "listen_print":
+        if len(args) == 4:
+            cmd_listen(False, args[2], args[3])
         if len(args) == 3:
             cmd_listen(False, args[2])
         else:
             cmd_listen(False, )
     elif cmd == "listen_dbus":
+        if len(args) == 4:
+            cmd_listen(True, args[2], args[3])
         if len(args) == 3:
             cmd_listen(True, args[2])
         else:
