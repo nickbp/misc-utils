@@ -28,17 +28,25 @@ default_track_format = "%(artist)s - %(name)s"
 # A separate format for messages about Banshee itself (eg when it's not running)
 default_err_format = "%s"
 
+# Various status strings...
+closed_status = "Not Running"
+loading_status = "Loading..."
+idle_status = "Idle"
+
 ####
 
-banshee_dbus_name = "org.bansheeproject.Banshee"
-banshee_dbus_engine_path = "/org/bansheeproject/Banshee/PlayerEngine"
-banshee_dbus_controller_path = "/org/bansheeproject/Banshee/PlaybackController"
+banshee_status_interface = "org.bansheeproject.Banshee"
+banshee_status_engine_path = "/org/bansheeproject/Banshee/PlayerEngine"
+banshee_status_controller_path = "/org/bansheeproject/Banshee/PlaybackController"
 
-dbus_listen_name = "org.bansheeproject.Banshee.PlayerEngine"
-dbus_listen_signal = "EventChanged"
+banshee_listen_interface = "org.bansheeproject.Banshee.PlayerEngine"
+banshee_listen_signal = "EventChanged"
+
+shutdown_listen_interface = "org.freedesktop.DBus"
+shutdown_listen_signal = "NameOwnerChanged"
 
 # Send data to an awesome widget
-dbus_send_name = "org.naquadah.awesome.awful"
+dbus_send_interface = "org.naquadah.awesome.awful"
 dbus_send_path = "/org/naquadah/awesome/awful/Remote"
 dbus_send_cmd = "Eval"
 
@@ -71,67 +79,78 @@ def get_dbus_obj(name, path, autostart = True):
 
     return bus.get_object(name, path)
 
-def get_status(track_format, err_format):
-    # False: if banshee is closed, dont start it
-    banshee = get_dbus_obj(banshee_dbus_name, banshee_dbus_engine_path, False)
+def _format_msg(err_format, msg, form = None):
     try:
-        if not banshee:
-            return unicode(err_format % "Not Running").encode("utf-8")
-        # in case no track is even selected..
-        state = banshee.GetCurrentState()
-        if state == "idle":
-            return unicode(err_format % "Idle").encode("utf-8")
-        elif state == "notready":
-            return unicode(err_format % "Loading...").encode("utf-8")
+        if form:
+            return unicode(form % msg).encode("utf-8")
         else:
-            track = banshee.GetCurrentTrack()
-            return unicode(track_format % track).encode("utf-8")
+            return unicode(err_format % msg).encode("utf-8")
     except KeyError, e:
         return unicode(err_format % ("Bad format: Not found: %s" % e)).encode("utf-8")
     except:
         return unicode(err_format % ("Exception: %s" % sys.exc_info()[1])).encode("utf-8")
 
-def _skip(msg, ignorea, ignoreb):
-    #print msg, ignorea, ignoreb
-    if msg == "startofstream" or msg == "preparevideowindow": #entered new song or opened banshee
-        return False
-    #assume song hasnt changed
-    #print "SKIP:", msg, get_status(default_track_format, default_err_format)
-    return True
+def get_status(track_format, err_format):
+    # False: if banshee is closed, dont start it
+    banshee = get_dbus_obj(banshee_status_interface, banshee_status_engine_path, False)
+    if not banshee:
+        return _format_msg(err_format, closed_status)
+    # in case no track is even selected..
+    state = banshee.GetCurrentState()
+    if state == "idle":
+        return _format_msg(err_format, idle_status)
+    elif state == "notready":
+        return _format_msg(err_format, loading_status)
+    else:
+        track = banshee.GetCurrentTrack()
+        return _format_msg(err_format, track, track_format)
 
-class PrintHandler:
-    def __init__(self, track_format, err_format):
-        self.__track_format = track_format
-        self.__err_format = err_format
+class PrintSender:
+    def send(self, sendme):
+        print sendme
 
-    def handle(self, msg, ignorea=None, ignoreb=None):
-        if _skip(msg, ignorea, ignoreb):
-            return
-
-        print get_status(self.__track_format, self.__err_format)
-
-class DbusHandler:
-    def __init__(self, dbus_name, dbus_path, dbus_cmd,
-                 track_format, err_format):
+class DbusSender:
+    def __init__(self, dbus_name, dbus_path, dbus_cmd):
         self.__dbus_name = dbus_name
         self.__dbus_path = dbus_path
         self.__dbus_cmd = dbus_cmd
-        self.__track_format = track_format
-        self.__err_format = err_format
 
-    def handle(self, msg, ignorea=None, ignoreb=None):
-        if _skip(msg, ignorea, ignoreb):
-            return
-
-        sendme = get_status(self.__track_format, self.__err_format)
+    def send(self, sendme):
         #print "SEND:", sendme
-
-        out = get_dbus_obj(self.__dbus_name, self.__dbus_path)
+        try:
+            out = get_dbus_obj(self.__dbus_name, self.__dbus_path)
+        except:
+            print "DBus Exception: %s" % sys.exc_info()[1]
+            return
         interface = self.__dbus_path[1:].replace('/','.')
 
         err = out.get_dbus_method(self.__dbus_cmd)(sendme, dbus_interface=interface)
         if err:
             print err
+
+class Handler:
+    def __init__(self, sender, track_format, err_format):
+        self.__sender = sender
+        self.__track_format = track_format
+        self.__err_format = err_format
+
+    def handle_banshee(self, msg, ignorea=None, ignoreb=None):
+        #entered new song or opened banshee
+        if not msg == "startofstream" and not msg == "preparevideowindow":
+            #print "SKIP:", msg
+            return
+        self.__sender.send(get_status(self.__track_format, self.__err_format))
+
+    def handle_owner(self, name, old_owner, new_owner):
+        if not name == banshee_status_interface:
+            return
+
+        if old_owner == "":
+            # banshee is starting
+            self.__sender.send(_format_msg(self.__err_format, loading_status))
+        elif new_owner == "":
+            # banshee is closing
+            self.__sender.send(_format_msg(self.__err_format, closed_status))
 
 def cmd_listen(dbus_out, track_format = default_track_format, err_format = default_err_format):
     # This must come BEFORE calling dbus.SessionBus():
@@ -140,20 +159,19 @@ def cmd_listen(dbus_out, track_format = default_track_format, err_format = defau
 
     bus = dbus.SessionBus(mainloop=dbus_loop)
     if dbus_out:
-        b = DbusHandler(dbus_send_name, dbus_send_path, dbus_send_cmd,
-                        track_format, err_format)
+        sender = DbusSender(dbus_send_interface, dbus_send_path, dbus_send_cmd)
     else:
-        b = PrintHandler(track_format, err_format)
+        sender = PrintSender()
+    handler = Handler(sender, track_format, err_format)
 
-    bus.add_signal_receiver(b.handle,
-                            dbus_listen_signal,
-                            dbus_listen_name)
+    bus.add_signal_receiver(handler.handle_banshee, banshee_listen_signal, banshee_listen_interface)
+    bus.add_signal_receiver(handler.handle_owner, shutdown_listen_signal, shutdown_listen_interface)
 
     import gobject
     loop = gobject.MainLoop()
 
     #ping the current status before we start listening for changes
-    b.handle("startofstream")
+    handler.handle_banshee("startofstream")
 
     loop.run()
 
@@ -161,28 +179,28 @@ def cmd_status(track_format = default_track_format, err_format = default_err_for
     print get_status(track_format, err_format)
 
 def cmd_play():
-    banshee = get_dbus_obj(banshee_dbus_name, banshee_dbus_engine_path)
+    banshee = get_dbus_obj(banshee_status_interface, banshee_status_engine_path)
     if banshee:
         banshee.TogglePlaying()
     cmd_status()
 
 def cmd_stop():
     # Don't start banshee to stop it...
-    banshee = get_dbus_obj(banshee_dbus_name, banshee_dbus_engine_path, False)
+    banshee = get_dbus_obj(banshee_status_interface, banshee_status_engine_path, False)
     if banshee:
         banshee.Close()
     cmd_status()
 
 def cmd_next():
     # Not sure what the 'restart' bool is for
-    banshee = get_dbus_obj(banshee_dbus_name, banshee_dbus_controller_path)
+    banshee = get_dbus_obj(banshee_status_interface, banshee_status_controller_path)
     if banshee:
         banshee.Next(True)
     cmd_status()
 
 def cmd_prev():
     # Not sure what the 'restart' bool is for
-    banshee = get_dbus_obj(banshee_dbus_name, banshee_dbus_controller_path)
+    banshee = get_dbus_obj(banshee_status_interface, banshee_status_controller_path)
     if banshee:
         banshee.RestartOrPrevious(True)
     cmd_status()
