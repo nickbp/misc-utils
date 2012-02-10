@@ -32,7 +32,7 @@ print_errors = False
 
 ### CODE ###
 
-import json, netrc, os, stat, sys, urllib, urllib2
+import json, netrc, os, stat, sys, time, urllib, urllib2
 
 # Returns ("user", "password") or raises string in the event of an error
 def get_netrc_login(path, host):
@@ -69,6 +69,14 @@ def request_auth_token(email, password, service="reader"):
     except:
         raise Exception("Auth token not found in server response")
 
+def valid_auth_token(token_path):
+    if not os.path.isfile(token_path):
+        return False
+    now = time.time()
+    # tokens expire in 2 weeks, so assume a token older than 10 days is invalid
+    # (give it some margin)
+    return (now - os.path.getmtime(token_path)) <= 10*86400
+
 def request_unread_count(auth_token):
     req_url = "http://www.google.com/reader/api/0/unread-count?output=json"
     req = urllib2.Request(req_url, None,
@@ -93,7 +101,7 @@ def request_unread_count(auth_token):
 def main():
     try:
         (user, _, pw) = get_netrc_login(netrc_path, netrc_host)
-        if token_path and os.path.isfile(token_path):
+        if token_path and valid_auth_token(token_path):
             # get token from file
             auth_token = open(token_path, "r").read().strip()
         else:
