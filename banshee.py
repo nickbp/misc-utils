@@ -29,7 +29,7 @@ default_track_format = "%(artist)s - %(name)s"
 default_err_format = "%s"
 
 # Various status strings...
-closed_status = "Not Running"
+closed_status = "" #"Not Running"
 loading_status = "Loading..."
 idle_status = "Idle"
 
@@ -50,7 +50,7 @@ dbus_send_interface = "org.naquadah.awesome.awful"
 dbus_send_path = "/org/naquadah/awesome/awful/Remote"
 dbus_send_cmd = "Eval"
 
-import dbus, sys
+import cgi, dbus, sys
 
 def help_exit():
     sys.stderr.write('''Args: %s <command> [track-format] [err-format]
@@ -81,10 +81,11 @@ def get_dbus_obj(name, path, autostart = True):
 
 def _format_msg(err_format, msg, form = None):
     try:
+	# cgi.escape: awesomewm dislikes any use of "&" and "<"
         if form:
-            return unicode(form % msg).encode("utf-8")
+            return cgi.escape(unicode(form % msg).encode("utf-8"))
         else:
-            return unicode(err_format % msg).encode("utf-8")
+            return cgi.escape(unicode(err_format % msg).encode("utf-8"))
     except KeyError, e:
         return unicode(err_format % ("Bad format: Not found: %s" % e)).encode("utf-8")
     except:
